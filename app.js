@@ -355,12 +355,12 @@ app.get('/api/postulaciones', async (req, res) => {
 })
 
 app.post('/api/postulaciones', async (req, res) => {
-  const { oferta_id, oferta_titulo, oferta_slug, empresa_id, empresa_nombre, perfil_id, user_email, estado } = req.body
+  const { oferta_id, empresa_id, perfil_id, estado } = req.body
   try {
     const { rows } = await pool.query(
-      `INSERT INTO public.postulaciones (oferta_id, oferta_titulo, oferta_slug, empresa_id, empresa_nombre, perfil_id, user_email, estado)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [oferta_id, oferta_titulo, oferta_slug, empresa_id, empresa_nombre, perfil_id, user_email, estado]
+      `INSERT INTO public.postulaciones (oferta_id, empresa_id, perfil_id, estado)
+       VALUES ($1,$2,$3,$4) RETURNING *`,
+      [oferta_id, empresa_id, perfil_id, estado]
     )
     res.status(201).json(rows[0])
   } catch (err) {
