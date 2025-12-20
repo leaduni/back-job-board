@@ -136,22 +136,20 @@ app.post('/api/seed', async (req, res) => {
     await client.query(`
       INSERT INTO public.perfiles (
         user_id, user_email, nombres, apellidos, telefono, fecha_nacimiento, carrera, ciclo_actual, anio_egreso,
-        promedio_ponderado, departamento, provincia, distrito, linkedin_url, github_url, portfolio_url,
-        cv_url, cv_filename, cv_uploaded_at, sobre_mi, habilidades_tecnicas, habilidades_blandas, intereses,
-        experiencia_laboral, proyectos, idiomas, educacion_adicional, modalidad_preferida, disponibilidad,
+        promedio_ponderado, departamento, distrito, linkedin_url, github_url, portfolio_url,
+        cv_url, cv_filename, cv_uploaded_at, sobre_mi, habilidades_tecnicas, habilidades_blandas,
+        experiencia_laboral, proyectos, idiomas, modalidad_preferida, disponibilidad,
         expectativa_salarial_min, expectativa_salarial_max, perfil_publico, busca_empleo, disponible_inmediato
       ) VALUES (
         2,'maria.garcia@uni.edu.pe','María','García Torres','+51 987654321','2001-05-15','Ingeniería Industrial',10,2024,9.80,
-        'Lima','Lima','San Isidro','https://linkedin.com/in/mariagarcia','https://github.com/mariagarcia','https://mariagarcia.dev',
+        'Lima','San Isidro','https://linkedin.com/in/mariagarcia','https://github.com/mariagarcia','https://mariagarcia.dev',
         'https://res.cloudinary.com/leaduni/raw/upload/v1234567890/leaduni/cvs/cv_2_1234567890.pdf','CV_Maria_Garcia.pdf', NOW(),
         'Estudiante de últimos ciclos apasionada por la optimización de procesos y el análisis de datos. Busco oportunidades para aplicar mis conocimientos en proyectos reales.',
         'Python, SQL, Power BI, Excel Avanzado, Minitab, Arena Simulation',
         'Liderazgo, Trabajo en equipo, Resolución de problemas, Comunicación efectiva',
-        'Análisis de datos, Mejora continua, Lean Six Sigma, Supply Chain',
         '[{"empresa":"Alicorp S.A.","cargo":"Practicante de Mejora Continua","descripcion":"Implementación de metodología Lean en líneas de producción, reduciendo tiempos de cambio en 25%","fecha_inicio":"2023-03","fecha_fin":"2023-12","actualmente":false},{"empresa":"Backus","cargo":"Practicante de Planeamiento","descripcion":"Análisis de demanda y optimización de inventarios usando Python","fecha_inicio":"2024-01","fecha_fin":null,"actualmente":true}]'::jsonb,
         '[{"nombre":"Sistema de Gestión de Inventarios","descripcion":"Aplicación web para control de inventarios con alertas automáticas de stock bajo","url":"https://inventory-system.vercel.app","repositorio":"https://github.com/mariagarcia/inventory-system","tecnologias":"React, Node.js, PostgreSQL, Chart.js","fecha":"2024-02"},{"nombre":"Dashboard de Indicadores KPI","descripcion":"Dashboard interactivo para visualización de KPIs operacionales en tiempo real","url":null,"repositorio":"https://github.com/mariagarcia/kpi-dashboard","tecnologias":"Python, Dash, Plotly, Pandas","fecha":"2023-11"}]'::jsonb,
         '[{"idioma":"Español","nivel":"nativo","certificacion":null},{"idioma":"Inglés","nivel":"avanzado","certificacion":"TOEFL ITP 580"},{"idioma":"Portugués","nivel":"basico","certificacion":null}]'::jsonb,
-        '[{"tipo":"certificacion","institucion":"Coursera - Google","titulo":"Google Data Analytics Professional Certificate","fecha":"2023-08"},{"tipo":"curso","institucion":"LinkedIn Learning","titulo":"Lean Six Sigma Yellow Belt","fecha":"2023-05"}]'::jsonb,
         'hibrido','Inmediata, 40 horas semanales',2000.00,2500.00,true,true,true
       );
     `)
@@ -179,56 +177,54 @@ app.post('/api/seed', async (req, res) => {
     // Postulaciones
     await client.query(`
       INSERT INTO public.postulaciones (
-        oferta_id, oferta_titulo, oferta_slug, empresa_id, empresa_nombre, perfil_id, user_email, carta_presentacion, cv_url,
-        estado, empresa_contacto_email, ip_address
+        oferta_id, empresa_id, perfil_id, carta_presentacion, cv_url,
+        estado, ip_address
       ) VALUES (
-        101,'Practicante de Desarrollo Backend','practicante-desarrollo-backend',1,'TechCorp Perú',
-        (SELECT id FROM public.perfiles WHERE user_id = 1),'juan.perez@uni.edu.pe',
+        101,1,
+        (SELECT id FROM public.perfiles WHERE user_id = 1),
         'Estimado equipo de TechCorp,\n\nMe dirijo a ustedes con gran entusiasmo para postular al puesto de Practicante de Desarrollo Backend...\n\nAtentamente,\nJuan Carlos Pérez',
-        'https://res.cloudinary.com/leaduni/raw/upload/v1234567890/leaduni/cvs/cv_1_1234567890.pdf','enviada','rrhh@techcorp.com','192.168.1.100'
+        'https://res.cloudinary.com/leaduni/raw/upload/v1234567890/leaduni/cvs/cv_1_1234567890.pdf','enviada','192.168.1.100'
       );
     `)
 
     await client.query(`
       INSERT INTO public.postulaciones (
-        oferta_id, oferta_titulo, oferta_slug, empresa_id, empresa_nombre, empresa_logo_url, perfil_id, user_email,
-        carta_presentacion, cv_url, estado, notas_internas, historial_estados, email_enviado, fecha_email_enviado,
-        empresa_contacto_email
+        oferta_id,empresa_id,perfil_id,
+        carta_presentacion, cv_url, estado, notas_internas, historial_estados, email_enviado, fecha_email_enviado
       ) VALUES (
-        102,'Analista de Mejora Continua','analista-mejora-continua',2,'Alicorp S.A.',
-        'https://res.cloudinary.com/leaduni/image/upload/v1234567890/leaduni/logos/alicorp.png',
-        (SELECT id FROM public.perfiles WHERE user_id = 2),'maria.garcia@uni.edu.pe',
+        102,2,
+        (SELECT id FROM public.perfiles WHERE user_id = 2),
         'Estimados,\n\nCon gran interés me postulo al puesto de Analista de Mejora Continua...',
         'https://res.cloudinary.com/leaduni/raw/upload/v1234567890/leaduni/cvs/cv_2_1234567890.pdf','en_revision',
         'Perfil muy interesante, experiencia previa en la empresa es un plus',
         '[{"estado":"enviada","fecha":"2024-01-15T10:30:00Z","nota":"Postulación recibida"},{"estado":"en_revision","fecha":"2024-01-16T14:20:00Z","nota":"Perfil muy interesante, experiencia previa en la empresa es un plus"}]'::jsonb,
-        true,'2024-01-15 10:35:00','seleccion@alicorp.com.pe'
+        true,'2024-01-15 10:35:00'
       );
     `)
 
     await client.query(`
       INSERT INTO public.postulaciones (
-        oferta_id, oferta_titulo, oferta_slug, empresa_id, empresa_nombre, perfil_id, user_email, carta_presentacion, cv_url,
-        respuestas_adicionales, estado, historial_estados, email_enviado, empresa_contacto_email
+        oferta_id,empresa_id, perfil_id, carta_presentacion, cv_url,
+        respuestas_adicionales, estado, historial_estados, email_enviado
       ) VALUES (
-        103,'Ingeniero de Diseño Mecánico Junior','ingeniero-diseno-mecanico-junior',3,'Ferreyros S.A.',
-        (SELECT id FROM public.perfiles WHERE user_id = 3),'carlos.rodriguez@uni.edu.pe',
+        103,3,
+        (SELECT id FROM public.perfiles WHERE user_id = 3),
         'Estimado equipo de Ferreyros,\n\nMe complace postular al puesto de Ingeniero de Diseño Mecánico Junior...',
         'https://res.cloudinary.com/leaduni/raw/upload/v1234567890/leaduni/cvs/cv_3_1234567890.pdf',
         '[{"pregunta":"¿Cuántos años de experiencia tienes con SolidWorks?","respuesta":"Tengo 2 años..."},{"pregunta":"¿Estás disponible para trabajar en campo?","respuesta":"Sí, estoy completamente disponible..."}]'::jsonb,
         'entrevista_programada',
         '[{"estado":"enviada","fecha":"2024-01-10T09:00:00Z","nota":"Postulación recibida"},{"estado":"en_revision","fecha":"2024-01-11T11:00:00Z","nota":"Candidato con experiencia previa en la empresa"},{"estado":"entrevista_programada","fecha":"2024-01-12T16:00:00Z","nota":"Entrevista programada para el 20/01/2024 a las 10:00 AM"}]'::jsonb,
-        true,'reclutamiento@ferreyros.com.pe'
+        true
       );
     `)
 
     await client.query(`
       INSERT INTO public.postulaciones (
-        oferta_id, oferta_titulo, oferta_slug, empresa_id, empresa_nombre, perfil_id, user_email, carta_presentacion, cv_url,
+        oferta_id, empresa_id, perfil_id, carta_presentacion, cv_url,
         estado, notas_internas, historial_estados, email_enviado
       ) VALUES (
-        104,'Desarrollador Full Stack Senior','desarrollador-fullstack-senior',4,'StartupTech',
-        (SELECT id FROM public.perfiles WHERE user_id = 1),'juan.perez@uni.edu.pe',
+        104,4,
+        (SELECT id FROM public.perfiles WHERE user_id = 1),
         'Estimado equipo,\n\nMe interesa el puesto de Desarrollador Full Stack Senior...',
         'https://res.cloudinary.com/leaduni/raw/upload/v1234567890/leaduni/cvs/cv_1_1234567890.pdf','rechazada',
         'Perfil junior, el puesto requiere 3+ años de experiencia',
@@ -240,53 +236,53 @@ app.post('/api/seed', async (req, res) => {
     // Notificaciones
     await client.query(`
       INSERT INTO public.notificaciones (
-        perfil_id, user_email, tipo, titulo, mensaje, url, accion_principal, entidad_tipo, entidad_id, metadata, prioridad
+        perfil_id, user_email, tipo, titulo, mensaje, url, entidad_tipo, entidad_id, metadata, prioridad
       ) VALUES (
         (SELECT id FROM public.perfiles WHERE user_id = 1),'juan.perez@uni.edu.pe','postulacion_enviada','✅ Postulación enviada exitosamente',
         'Tu postulación a "Practicante de Desarrollo Backend" en TechCorp Perú ha sido enviada correctamente. Te notificaremos cuando haya novedades.',
-        '/mis-postulaciones','Ver postulación','postulacion',101,'{"oferta_titulo":"Practicante de Desarrollo Backend","empresa":"TechCorp Perú"}'::jsonb,'normal'
+        '/mis-postulaciones','postulacion',101,'{"oferta_titulo":"Practicante de Desarrollo Backend","empresa":"TechCorp Perú"}'::jsonb,'normal'
       );
     `)
 
     await client.query(`
       INSERT INTO public.notificaciones (
-        perfil_id, user_email, tipo, titulo, mensaje, url, accion_principal, entidad_tipo, entidad_id, metadata, prioridad, leida
+        perfil_id, user_email, tipo, titulo, mensaje, url, entidad_tipo, entidad_id, metadata, prioridad, leida
       ) VALUES (
         (SELECT id FROM public.perfiles WHERE user_id = 2),'maria.garcia@uni.edu.pe','cambio_estado_postulacion','🎉 Tu postulación está en revisión',
         'Alicorp S.A. está revisando tu postulación para "Analista de Mejora Continua". ¡Mantente atento a tu correo!',
-        '/mis-postulaciones','Ver detalles','postulacion',102,'{"oferta_titulo":"Analista de Mejora Continua","empresa":"Alicorp S.A.","estado_anterior":"enviada","estado_nuevo":"en_revision"}'::jsonb,
+        '/mis-postulaciones','postulacion',102,'{"oferta_titulo":"Analista de Mejora Continua","empresa":"Alicorp S.A.","estado_anterior":"enviada","estado_nuevo":"en_revision"}'::jsonb,
         'alta',false
       );
     `)
 
     await client.query(`
       INSERT INTO public.notificaciones (
-        perfil_id, user_email, tipo, titulo, mensaje, url, accion_principal, accion_secundaria, entidad_tipo, entidad_id, metadata, prioridad
+        perfil_id, user_email, tipo, titulo, mensaje, url, entidad_tipo, entidad_id, metadata, prioridad
       ) VALUES (
         (SELECT id FROM public.perfiles WHERE user_id = 3),'carlos.rodriguez@uni.edu.pe','cambio_estado_postulacion','📅 ¡Entrevista programada!',
         'Ferreyros S.A. ha programado una entrevista contigo para el puesto de "Ingeniero de Diseño Mecánico Junior" el día 20/01/2024 a las 10:00 AM.',
-        '/mis-postulaciones','Ver detalles','Agregar a calendario','postulacion',103,'{"oferta_titulo":"Ingeniero de Diseño Mecánico Junior","empresa":"Ferreyros S.A.","fecha_entrevista":"2024-01-20T10:00:00Z","modalidad":"presencial","direccion":"Av. Cristóbal de Peralta Norte 820, Surco"}'::jsonb,
+        '/mis-postulaciones','postulacion',103,'{"oferta_titulo":"Ingeniero de Diseño Mecánico Junior","empresa":"Ferreyros S.A.","fecha_entrevista":"2024-01-20T10:00:00Z","modalidad":"presencial","direccion":"Av. Cristóbal de Peralta Norte 820, Surco"}'::jsonb,
         'urgente'
       );
     `)
 
     await client.query(`
       INSERT INTO public.notificaciones (
-        perfil_id, user_email, tipo, titulo, mensaje, url, accion_principal, metadata, prioridad
+        perfil_id, user_email, tipo, titulo, mensaje, url, metadata, prioridad
       ) VALUES (
         (SELECT id FROM public.perfiles WHERE user_id = 1),'juan.perez@uni.edu.pe','perfil_incompleto','⚠️ Completa tu perfil',
         'Tu perfil está al 45%. Complétalo para tener más oportunidades de ser contactado por empresas. Agrega tu CV, experiencia y proyectos.',
-        '/perfil/editar','Completar perfil','{"porcentaje_actual":45,"campos_faltantes":["cv_url","experiencia_laboral","proyectos"]}'::jsonb,'baja'
+        '/perfil/editar','{"porcentaje_actual":45,"campos_faltantes":["cv_url","experiencia_laboral","proyectos"]}'::jsonb,'baja'
       );
     `)
 
     await client.query(`
       INSERT INTO public.notificaciones (
-        perfil_id, user_email, tipo, titulo, mensaje, url, accion_principal, entidad_tipo, entidad_id, metadata, prioridad
+        perfil_id, user_email, tipo, titulo, mensaje, url, entidad_tipo, entidad_id, metadata, prioridad
       ) VALUES (
         (SELECT id FROM public.perfiles WHERE user_id = 1),'juan.perez@uni.edu.pe','curso_sugerido','📚 Curso recomendado para ti',
         'Basándonos en las ofertas que te interesan, te recomendamos el curso "Python para Data Science" de Coursera. ¡Es gratis!',
-        '/capacitate','Ver curso','curso',15,'{"curso_titulo":"Python para Data Science","proveedor":"Coursera","es_gratuito":true,"duracion":"40 horas"}'::jsonb,'normal'
+        '/capacitate','curso',15,'{"curso_titulo":"Python para Data Science","proveedor":"Coursera","es_gratuito":true,"duracion":"40 horas"}'::jsonb,'normal'
       );
     `)
 
@@ -359,12 +355,12 @@ app.get('/api/postulaciones', async (req, res) => {
 })
 
 app.post('/api/postulaciones', async (req, res) => {
-  const { oferta_id, oferta_titulo, oferta_slug, empresa_id, empresa_nombre, perfil_id, user_email, estado } = req.body
+  const { oferta_id, empresa_id, perfil_id, estado } = req.body
   try {
     const { rows } = await pool.query(
-      `INSERT INTO public.postulaciones (oferta_id, oferta_titulo, oferta_slug, empresa_id, empresa_nombre, perfil_id, user_email, estado)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [oferta_id, oferta_titulo, oferta_slug, empresa_id, empresa_nombre, perfil_id, user_email, estado]
+      `INSERT INTO public.postulaciones (oferta_id, empresa_id, perfil_id, estado)
+       VALUES ($1,$2,$3,$4) RETURNING *`,
+      [oferta_id, empresa_id, perfil_id, estado]
     )
     res.status(201).json(rows[0])
   } catch (err) {
