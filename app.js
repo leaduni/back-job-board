@@ -176,7 +176,7 @@ app.patch("/api/me/candidate", authenticateToken, async (req, res) => {
       "linkedin_url",
       "github_url",
       "portfolio_url",
-      "cv_media_id",
+      "cv_url",
       "cv_last_modified",
     ];
 
