@@ -671,6 +671,27 @@ app.patch("/api/postulaciones/:id", async (req, res) => {
   }
 });
 
+// PATCH solo para cambiar el estado de una postulación
+app.patch("/api/postulaciones/:id/estado", async (req, res) => {
+  const { id } = req.params;
+  const { estado } = req.body;
+  if (!estado) {
+    return res.status(400).json({ error: "Falta el campo 'estado'" });
+  }
+  try {
+    const { rows } = await pool.query(
+      "UPDATE public.postulaciones SET estado = $1 WHERE id = $2 RETURNING *",
+      [estado, id],
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Postulación no encontrada" });
+    }
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/notificaciones", async (req, res) => {
   try {
     const { rows } = await pool.query(
