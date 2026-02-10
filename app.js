@@ -1,65 +1,71 @@
 // Simple Express app template (CommonJS-friendly)
-const express = require('express')
-const cors = require('cors')
-const multer = require('multer')
-const { v2: cloudinary } = require('cloudinary')
-require('dotenv').config()
-const { listTables, ping } = require('./db')
-const { pool } = require('./db')
+const express = require("express");
+const cors = require("cors");
+const multer = require("multer");
+const { v2: cloudinary } = require("cloudinary");
+require("dotenv").config();
+const { listTables, ping } = require("./db");
+const { pool } = require("./db");
+const crypto = require("crypto");
+const jwt = require("jsonwebtoken");
 
-const app = express()
-const PORT = process.env.PORT || 3001
+const app = express();
+const PORT = process.env.PORT || 3001;
+const JWT_SECRET = process.env.JWT_SECRET || "secret_key_change_this";
 
 // Middleware
-app.use(cors())
-app.use(express.json())
+app.use(cors());
+app.use(express.json());
 
 // Configure Cloudinary (requires CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET)
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
-})
+});
 
 // Multer memory storage for multipart uploads
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024 },
-})
+});
 
 // Healthcheck
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime() })
-})
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", uptime: process.uptime() });
+});
 
 // DB ping
-app.get('/api/db/ping', async (req, res) => {
+app.get("/api/db/ping", async (req, res) => {
   try {
-    const r = await ping()
-    res.json({ status: 'ok', db: r })
+    const r = await ping();
+    res.json({ status: "ok", db: r });
   } catch (err) {
-    console.error('DB ping error:', err)
-    res.status(500).json({ error: 'DB ping failed', detail: err.message })
+    console.error("DB ping error:", err);
+    res.status(500).json({ error: "DB ping failed", detail: err.message });
   }
-})
+});
 
 // List DB tables
-app.get('/api/db/tables', async (req, res) => {
+app.get("/api/db/tables", async (req, res) => {
   try {
-    const tables = await listTables()
-    res.json({ tables })
+    const tables = await listTables();
+    res.json({ tables });
   } catch (err) {
-    console.error('List tables error:', err)
-    res.status(500).json({ error: 'Failed to list tables', detail: err.message })
+    console.error("List tables error:", err);
+    res
+      .status(500)
+      .json({ error: "Failed to list tables", detail: err.message });
   }
-})
+});
 
 // Describe table columns and types
 // Usage: GET /api/db/describe?table=perfiles&schema=public
-app.get('/api/db/describe', async (req, res) => {
-  const schema = req.query.schema || 'public'
-  const table = req.query.table
-  if (!table) return res.status(400).json({ error: 'Missing query param "table"' })
+app.get("/api/db/describe", async (req, res) => {
+  const schema = req.query.schema || "public";
+  const table = req.query.table;
+  if (!table)
+    return res.status(400).json({ error: 'Missing query param "table"' });
   try {
     const sql = `
       SELECT
@@ -73,67 +79,330 @@ app.get('/api/db/describe', async (req, res) => {
       FROM information_schema.columns c
       WHERE c.table_schema = $1 AND c.table_name = $2
       ORDER BY c.ordinal_position
-    `
-    const { rows } = await pool.query(sql, [schema, table])
-    res.json({ schema, table, columns: rows })
+    `;
+    const { rows } = await pool.query(sql, [schema, table]);
+    res.json({ schema, table, columns: rows });
   } catch (err) {
-    console.error('Describe table error:', err)
-    res.status(500).json({ error: 'Failed to describe table', detail: err.message })
+    console.error("Describe table error:", err);
+    res
+      .status(500)
+      .json({ error: "Failed to describe table", detail: err.message });
   }
-})
+});
+
+// --- AUTHENTICATION HELPERS ---
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto
+    .pbkdf2Sync(password, salt, 1000, 64, "sha512")
+    .toString("hex");
+  return { salt, hash };
+}
+
+function verifyPassword(password, salt, storedHash) {
+  const hash = crypto
+    .pbkdf2Sync(password, salt, 1000, 64, "sha512")
+    .toString("hex");
+  return hash === storedHash;
+}
+
+// --- AUTHENTICATION MIDDLEWARE ---
+
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+
+  if (token == null) return res.status(401).json({ error: "Null token" });
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: "Invalid token" });
+    req.user = user;
+    next();
+  });
+}
+
+// --- AUTHENTICATION ROUTES ---
+
+// Get current user profile (User + Candidate data)
+app.get("/api/me", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // Fetch user basic info
+    const userQuery =
+      "SELECT id, email, role, created_at FROM public.users WHERE id = $1";
+    const { rows: userRows } = await pool.query(userQuery, [userId]);
+
+    if (userRows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    const user = userRows[0];
+
+    // Fetch candidate profile info
+    const candidateQuery = "SELECT * FROM public.candidates WHERE user_id = $1";
+    const { rows: candidateRows } = await pool.query(candidateQuery, [userId]);
+    const candidate = candidateRows[0] || null;
+
+    res.json({
+      user,
+      candidate,
+    });
+  } catch (err) {
+    console.error("Get profile error:", err);
+    res
+      .status(500)
+      .json({ error: "Failed to fetch profile", detail: err.message });
+  }
+});
+
+// Update current user's candidate profile
+app.patch("/api/me/candidate", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const fields = req.body || {};
+
+    // Whitelist allowed fields to prevent SQL injection or updating restricted columns
+    const allowedFields = [
+      "first_name",
+      "last_name",
+      "phone",
+      "birth_date",
+      "location",
+      "major_id",
+      "start_year",
+      "end_year",
+      "bio",
+      "linkedin_url",
+      "github_url",
+      "portfolio_url",
+      "cv_media_id",
+      "cv_last_modified",
+    ];
+
+    const updates = [];
+    const values = [];
+    let valueIndex = 1;
+
+    for (const key of Object.keys(fields)) {
+      if (allowedFields.includes(key)) {
+        updates.push(`${key} = $${valueIndex}`);
+        values.push(fields[key]);
+        valueIndex++;
+      }
+    }
+
+    if (updates.length === 0) {
+      return res
+        .status(400)
+        .json({ error: "No valid fields provided for update" });
+    }
+
+    // Add updated_at
+    updates.push(`updated_at = NOW()`);
+
+    // Add userId to values for the WHERE clause
+    values.push(userId);
+
+    const query = `
+      UPDATE public.candidates 
+      SET ${updates.join(", ")} 
+      WHERE user_id = $${valueIndex} 
+      RETURNING *
+    `;
+
+    const { rows } = await pool.query(query, values);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Candidate profile not found" });
+    }
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("Update candidate error:", err);
+    res.status(500).json({
+      error: "Failed to update candidate profile",
+      detail: err.message,
+    });
+  }
+});
+
+// Register
+app.post("/api/auth/register", async (req, res) => {
+  const { email, password, role, first_name, last_name } = req.body;
+
+  if (!email || !password || !first_name || !last_name) {
+    return res.status(400).json({
+      error: "Email, password, first_name, and last_name are required",
+    });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    // Check if user exists
+    const checkUser = await client.query(
+      "SELECT id FROM public.users WHERE email = $1",
+      [email],
+    );
+    if (checkUser.rows.length > 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "User already exists" });
+    }
+
+    // Hash password
+    const { salt, hash } = hashPassword(password);
+
+    // Insert user
+    // role is optional, defaults to 'user' in DB if null
+    const userQuery = `
+      INSERT INTO public.users (email, salt, hash, role)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, email, role, created_at
+    `;
+    const userValues = [email, salt, hash, role || "user"];
+    const userRes = await client.query(userQuery, userValues);
+    const newUser = userRes.rows[0];
+
+    // Insert candidate (linked to user)
+    const candidateQuery = `
+      INSERT INTO public.candidates (user_id, first_name, last_name)
+      VALUES ($1, $2, $3)
+      RETURNING *
+    `;
+    const candidateValues = [newUser.id, first_name, last_name];
+    const candidateRes = await client.query(candidateQuery, candidateValues);
+    const newCandidate = candidateRes.rows[0];
+
+    await client.query("COMMIT");
+
+    // Create JWT
+    const token = jwt.sign(
+      { id: newUser.id, email: newUser.email, role: newUser.role },
+      JWT_SECRET,
+      { expiresIn: "24h" },
+    );
+
+    res.status(201).json({
+      message: "User registered successfully",
+      user: newUser,
+      candidate: newCandidate,
+      token,
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("Register error:", err);
+    res.status(500).json({ error: "Registration failed", detail: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Login
+app.post("/api/auth/login", async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email and password are required" });
+  }
+
+  try {
+    // Find user
+    const query = "SELECT * FROM public.users WHERE email = $1";
+    const { rows } = await pool.query(query, [email]);
+
+    if (rows.length === 0) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    const user = rows[0];
+
+    // Verify password
+    if (!verifyPassword(password, user.salt, user.hash)) {
+      // Update login attempts if needed (optional based on schema)
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    // Create JWT
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role },
+      JWT_SECRET,
+      { expiresIn: "24h" },
+    );
+
+    // Remove sensitive data from response
+    delete user.salt;
+    delete user.hash;
+    delete user.reset_password_token;
+
+    res.json({
+      message: "Login successful",
+      user,
+      token,
+    });
+  } catch (err) {
+    console.error("Login error:", err);
+    res.status(500).json({ error: "Login failed", detail: err.message });
+  }
+});
 
 // Upload CV to Cloudinary folder "CVs LEAD"
 // - Multipart: field name "file" (PDF/DOC/DOCX etc.)
 // - JSON: { fileUrl: 'https://...' } or data URI
-app.post('/api/upload/cv', upload.single('file'), async (req, res) => {
+app.post("/api/upload/cv", upload.single("file"), async (req, res) => {
   try {
-    const folder = 'CVs LEAD'
+    const folder = "CVs LEAD";
 
     if (req.file) {
       const result = await new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream(
-          { folder, resource_type: 'auto' },
+          { folder, resource_type: "auto" },
           (error, uploadResult) => {
-            if (error) return reject(error)
-            resolve(uploadResult)
-          }
-        )
-        stream.end(req.file.buffer)
-      })
-      return res.json({ ok: true, result })
+            if (error) return reject(error);
+            resolve(uploadResult);
+          },
+        );
+        stream.end(req.file.buffer);
+      });
+      return res.json({ ok: true, result });
     }
 
-    const { fileUrl, publicId } = req.body || {}
+    const { fileUrl, publicId } = req.body || {};
     if (!fileUrl) {
-      return res.status(400).json({ ok: false, error: 'Provide multipart field "file" or body.fileUrl' })
+      return res.status(400).json({
+        ok: false,
+        error: 'Provide multipart field "file" or body.fileUrl',
+      });
     }
 
     const result = await cloudinary.uploader.upload(fileUrl, {
       folder,
       public_id: publicId || undefined,
-      resource_type: 'auto',
-    })
-    res.json({ ok: true, result })
+      resource_type: "auto",
+    });
+    res.json({ ok: true, result });
   } catch (err) {
-    console.error('Cloudinary upload error:', err)
-    res.status(500).json({ ok: false, error: err.message })
+    console.error("Cloudinary upload error:", err);
+    res.status(500).json({ ok: false, error: err.message });
   }
-})
+});
 
 // Seed endpoint: ejecuta los INSERTs de ejemplo en una transacción
-app.post('/api/seed', async (req, res) => {
-  const client = await pool.connect()
+app.post("/api/seed", async (req, res) => {
+  const client = await pool.connect();
   try {
-    await client.query('BEGIN')
+    await client.query("BEGIN");
 
     // Perfiles
     await client.query(`
       INSERT INTO public.perfiles (user_id, user_email, nombres, apellidos, carrera, ciclo_actual)
       VALUES (1,'juan.perez@uni.edu.pe','Juan Carlos','Pérez López','Ingeniería de Sistemas',8);
-    `)
-    
+    `);
+
     try {
-    await client.query(`
+      await client.query(`
       INSERT INTO public.perfiles (
         user_id, user_email, nombres, apellidos, telefono, fecha_nacimiento, carrera, ciclo_actual, anio_egreso,
         promedio_ponderado, departamento, distrito, linkedin_url, github_url, portfolio_url,
@@ -152,9 +421,9 @@ app.post('/api/seed', async (req, res) => {
         '[{"idioma":"Español","nivel":"nativo","certificacion":null},{"idioma":"Inglés","nivel":"avanzado","certificacion":"TOEFL ITP 580"},{"idioma":"Portugués","nivel":"basico","certificacion":null}]'::jsonb,
         'hibrido','Inmediata, 40 horas semanales',2000.00,2500.00,true,true,true
       );
-    `)
+    `);
     } catch (e) {
-      throw new Error(`Seed perfiles (Maria) failed: ${e.message}`)
+      throw new Error(`Seed perfiles (Maria) failed: ${e.message}`);
     }
 
     await client.query(`
@@ -172,7 +441,7 @@ app.post('/api/seed', async (req, res) => {
         '[{"idioma":"Español","nivel":"nativo","certificacion":null},{"idioma":"Inglés","nivel":"intermedio","certificacion":null}]'::jsonb,
         'presencial',3000.00,false,false
       );
-    `)
+    `);
 
     // Postulaciones
     await client.query(`
@@ -185,7 +454,7 @@ app.post('/api/seed', async (req, res) => {
         'Estimado equipo de TechCorp,\n\nMe dirijo a ustedes con gran entusiasmo para postular al puesto de Practicante de Desarrollo Backend...\n\nAtentamente,\nJuan Carlos Pérez',
         'https://res.cloudinary.com/leaduni/raw/upload/v1234567890/leaduni/cvs/cv_1_1234567890.pdf','enviada','192.168.1.100'
       );
-    `)
+    `);
 
     await client.query(`
       INSERT INTO public.postulaciones (
@@ -200,7 +469,7 @@ app.post('/api/seed', async (req, res) => {
         '[{"estado":"enviada","fecha":"2024-01-15T10:30:00Z","nota":"Postulación recibida"},{"estado":"en_revision","fecha":"2024-01-16T14:20:00Z","nota":"Perfil muy interesante, experiencia previa en la empresa es un plus"}]'::jsonb,
         true,'2024-01-15 10:35:00'
       );
-    `)
+    `);
 
     await client.query(`
       INSERT INTO public.postulaciones (
@@ -216,7 +485,7 @@ app.post('/api/seed', async (req, res) => {
         '[{"estado":"enviada","fecha":"2024-01-10T09:00:00Z","nota":"Postulación recibida"},{"estado":"en_revision","fecha":"2024-01-11T11:00:00Z","nota":"Candidato con experiencia previa en la empresa"},{"estado":"entrevista_programada","fecha":"2024-01-12T16:00:00Z","nota":"Entrevista programada para el 20/01/2024 a las 10:00 AM"}]'::jsonb,
         true
       );
-    `)
+    `);
 
     await client.query(`
       INSERT INTO public.postulaciones (
@@ -231,7 +500,7 @@ app.post('/api/seed', async (req, res) => {
         '[{"estado":"enviada","fecha":"2024-01-08T14:00:00Z","nota":"Postulación recibida"},{"estado":"en_revision","fecha":"2024-01-09T10:00:00Z","nota":"Revisando perfil"},{"estado":"rechazada","fecha":"2024-01-09T15:00:00Z","nota":"Perfil junior, el puesto requiere 3+ años de experiencia"}]'::jsonb,
         true
       );
-    `)
+    `);
 
     // Notificaciones
     await client.query(`
@@ -242,7 +511,7 @@ app.post('/api/seed', async (req, res) => {
         'Tu postulación a "Practicante de Desarrollo Backend" en TechCorp Perú ha sido enviada correctamente. Te notificaremos cuando haya novedades.',
         '/mis-postulaciones','postulacion',101,'{"oferta_titulo":"Practicante de Desarrollo Backend","empresa":"TechCorp Perú"}'::jsonb,'normal'
       );
-    `)
+    `);
 
     await client.query(`
       INSERT INTO public.notificaciones (
@@ -253,7 +522,7 @@ app.post('/api/seed', async (req, res) => {
         '/mis-postulaciones','postulacion',102,'{"oferta_titulo":"Analista de Mejora Continua","empresa":"Alicorp S.A.","estado_anterior":"enviada","estado_nuevo":"en_revision"}'::jsonb,
         'alta',false
       );
-    `)
+    `);
 
     await client.query(`
       INSERT INTO public.notificaciones (
@@ -264,7 +533,7 @@ app.post('/api/seed', async (req, res) => {
         '/mis-postulaciones','postulacion',103,'{"oferta_titulo":"Ingeniero de Diseño Mecánico Junior","empresa":"Ferreyros S.A.","fecha_entrevista":"2024-01-20T10:00:00Z","modalidad":"presencial","direccion":"Av. Cristóbal de Peralta Norte 820, Surco"}'::jsonb,
         'urgente'
       );
-    `)
+    `);
 
     await client.query(`
       INSERT INTO public.notificaciones (
@@ -274,7 +543,7 @@ app.post('/api/seed', async (req, res) => {
         'Tu perfil está al 45%. Complétalo para tener más oportunidades de ser contactado por empresas. Agrega tu CV, experiencia y proyectos.',
         '/perfil/editar','{"porcentaje_actual":45,"campos_faltantes":["cv_url","experiencia_laboral","proyectos"]}'::jsonb,'baja'
       );
-    `)
+    `);
 
     await client.query(`
       INSERT INTO public.notificaciones (
@@ -284,7 +553,7 @@ app.post('/api/seed', async (req, res) => {
         'Basándonos en las ofertas que te interesan, te recomendamos el curso "Python para Data Science" de Coursera. ¡Es gratis!',
         '/capacitate','curso',15,'{"curso_titulo":"Python para Data Science","proveedor":"Coursera","es_gratuito":true,"duracion":"40 horas"}'::jsonb,'normal'
       );
-    `)
+    `);
 
     await client.query(`
       INSERT INTO public.notificaciones (
@@ -294,150 +563,169 @@ app.post('/api/seed', async (req, res) => {
         'Gracias por registrarte. Completa tu perfil para empezar a postular a ofertas laborales.',
         '/perfil/editar',true, NOW() - INTERVAL '2 days','normal'
       );
-    `)
+    `);
 
-    await client.query('COMMIT')
-    res.json({ ok: true })
+    await client.query("COMMIT");
+    res.json({ ok: true });
   } catch (err) {
-    await client.query('ROLLBACK')
-    console.error('Seed error:', err)
-    res.status(500).json({ error: 'Seed failed', detail: err.message })
+    await client.query("ROLLBACK");
+    console.error("Seed error:", err);
+    res.status(500).json({ error: "Seed failed", detail: err.message });
   } finally {
-    client.release()
+    client.release();
   }
-})
+});
 
 // CRUD mínimo
-app.get('/api/perfiles', async (req, res) => {
-  try {
-    const { rows } = await pool.query('SELECT * FROM public.perfiles ORDER BY id DESC LIMIT 100')
-    res.json(rows)
-  } catch (err) {
-    res.status(500).json({ error: err.message })
-  }
-})
-
-app.post('/api/perfiles', async (req, res) => {
-  const { user_id, user_email, nombres, apellidos, carrera, ciclo_actual } = req.body
+app.get("/api/perfiles", async (req, res) => {
   try {
     const { rows } = await pool.query(
-      'INSERT INTO public.perfiles (user_id, user_email, nombres, apellidos, carrera, ciclo_actual) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
-      [user_id, user_email, nombres, apellidos, carrera, ciclo_actual]
-    )
-    res.status(201).json(rows[0])
+      "SELECT * FROM public.perfiles ORDER BY id DESC LIMIT 100",
+    );
+    res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: err.message });
   }
-})
+});
 
-app.patch('/api/perfiles/:id', async (req, res) => {
-  const { id } = req.params
-  const fields = req.body || {}
-  const keys = Object.keys(fields)
-  if (keys.length === 0) return res.status(400).json({ error: 'No fields provided' })
-  const setClause = keys.map((k, i) => `${k} = $${i + 1}`).join(', ')
-  const values = keys.map(k => fields[k])
+app.post("/api/perfiles", async (req, res) => {
+  const { user_id, user_email, nombres, apellidos, carrera, ciclo_actual } =
+    req.body;
   try {
-    const { rows } = await pool.query(`UPDATE public.perfiles SET ${setClause} WHERE id = $${keys.length + 1} RETURNING *`, [...values, id])
-    res.json(rows[0] || null)
+    const { rows } = await pool.query(
+      "INSERT INTO public.perfiles (user_id, user_email, nombres, apellidos, carrera, ciclo_actual) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *",
+      [user_id, user_email, nombres, apellidos, carrera, ciclo_actual],
+    );
+    res.status(201).json(rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: err.message });
   }
-})
+});
 
-app.get('/api/postulaciones', async (req, res) => {
+app.patch("/api/perfiles/:id", async (req, res) => {
+  const { id } = req.params;
+  const fields = req.body || {};
+  const keys = Object.keys(fields);
+  if (keys.length === 0)
+    return res.status(400).json({ error: "No fields provided" });
+  const setClause = keys.map((k, i) => `${k} = $${i + 1}`).join(", ");
+  const values = keys.map((k) => fields[k]);
   try {
-    const { rows } = await pool.query('SELECT * FROM public.postulaciones ORDER BY id DESC LIMIT 100')
-    res.json(rows)
+    const { rows } = await pool.query(
+      `UPDATE public.perfiles SET ${setClause} WHERE id = $${keys.length + 1} RETURNING *`,
+      [...values, id],
+    );
+    res.json(rows[0] || null);
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: err.message });
   }
-})
+});
 
-app.post('/api/postulaciones', async (req, res) => {
-  const { oferta_id, empresa_id, perfil_id, estado } = req.body
+app.get("/api/postulaciones", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT * FROM public.postulaciones ORDER BY id DESC LIMIT 100",
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/postulaciones", async (req, res) => {
+  const { oferta_id, empresa_id, perfil_id, estado } = req.body;
   try {
     const { rows } = await pool.query(
       `INSERT INTO public.postulaciones (oferta_id, empresa_id, perfil_id, estado)
        VALUES ($1,$2,$3,$4) RETURNING *`,
-      [oferta_id, empresa_id, perfil_id, estado]
-    )
-    res.status(201).json(rows[0])
+      [oferta_id, empresa_id, perfil_id, estado],
+    );
+    res.status(201).json(rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: err.message });
   }
-})
+});
 
-app.patch('/api/postulaciones/:id', async (req, res) => {
-  const { id } = req.params
-  const fields = req.body || {}
-  const keys = Object.keys(fields)
-  if (keys.length === 0) return res.status(400).json({ error: 'No fields provided' })
-  const setClause = keys.map((k, i) => `${k} = $${i + 1}`).join(', ')
-  const values = keys.map(k => fields[k])
+app.patch("/api/postulaciones/:id", async (req, res) => {
+  const { id } = req.params;
+  const fields = req.body || {};
+  const keys = Object.keys(fields);
+  if (keys.length === 0)
+    return res.status(400).json({ error: "No fields provided" });
+  const setClause = keys.map((k, i) => `${k} = $${i + 1}`).join(", ");
+  const values = keys.map((k) => fields[k]);
   try {
-    const { rows } = await pool.query(`UPDATE public.postulaciones SET ${setClause} WHERE id = $${keys.length + 1} RETURNING *`, [...values, id])
-    res.json(rows[0] || null)
+    const { rows } = await pool.query(
+      `UPDATE public.postulaciones SET ${setClause} WHERE id = $${keys.length + 1} RETURNING *`,
+      [...values, id],
+    );
+    res.json(rows[0] || null);
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: err.message });
   }
-})
+});
 
-app.get('/api/notificaciones', async (req, res) => {
+app.get("/api/notificaciones", async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM public.notificaciones ORDER BY id DESC LIMIT 100')
-    res.json(rows)
+    const { rows } = await pool.query(
+      "SELECT * FROM public.notificaciones ORDER BY id DESC LIMIT 100",
+    );
+    res.json(rows);
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: err.message });
   }
-})
+});
 
-app.post('/api/notificaciones', async (req, res) => {
-  const { perfil_id, user_email, tipo, titulo, mensaje } = req.body
+app.post("/api/notificaciones", async (req, res) => {
+  const { perfil_id, user_email, tipo, titulo, mensaje } = req.body;
   try {
     const { rows } = await pool.query(
       `INSERT INTO public.notificaciones (perfil_id, user_email, tipo, titulo, mensaje)
        VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [perfil_id, user_email, tipo, titulo, mensaje]
-    )
-    res.status(201).json(rows[0])
+      [perfil_id, user_email, tipo, titulo, mensaje],
+    );
+    res.status(201).json(rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: err.message });
   }
-})
+});
 
-app.patch('/api/notificaciones/:id', async (req, res) => {
-  const { id } = req.params
-  const fields = req.body || {}
-  const keys = Object.keys(fields)
-  if (keys.length === 0) return res.status(400).json({ error: 'No fields provided' })
-  const setClause = keys.map((k, i) => `${k} = $${i + 1}`).join(', ')
-  const values = keys.map(k => fields[k])
+app.patch("/api/notificaciones/:id", async (req, res) => {
+  const { id } = req.params;
+  const fields = req.body || {};
+  const keys = Object.keys(fields);
+  if (keys.length === 0)
+    return res.status(400).json({ error: "No fields provided" });
+  const setClause = keys.map((k, i) => `${k} = $${i + 1}`).join(", ");
+  const values = keys.map((k) => fields[k]);
   try {
-    const { rows } = await pool.query(`UPDATE public.notificaciones SET ${setClause} WHERE id = $${keys.length + 1} RETURNING *`, [...values, id])
-    res.json(rows[0] || null)
+    const { rows } = await pool.query(
+      `UPDATE public.notificaciones SET ${setClause} WHERE id = $${keys.length + 1} RETURNING *`,
+      [...values, id],
+    );
+    res.json(rows[0] || null);
   } catch (err) {
-    res.status(500).json({ error: err.message })
+    res.status(500).json({ error: err.message });
   }
-})
+});
 
 // Home
-app.get('/', (req, res) => {
-  res.send('API backend corriendo ✅')
-})
+app.get("/", (req, res) => {
+  res.send("API backend corriendo ✅");
+});
 
 // 404 handler
 app.use((req, res) => {
-  res.status(404).json({ error: 'Not Found' })
-})
+  res.status(404).json({ error: "Not Found" });
+});
 
 // Error handler
 app.use((err, req, res, next) => {
-  console.error(err)
-  res.status(500).json({ error: 'Internal Server Error' })
-})
+  console.error(err);
+  res.status(500).json({ error: "Internal Server Error" });
+});
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`Servidor escuchando en http://localhost:${PORT}`)
-})
+  console.log(`Servidor escuchando en http://localhost:${PORT}`);
+});
