@@ -623,9 +623,15 @@ app.patch("/api/perfiles/:id", async (req, res) => {
 
 app.get("/api/postulaciones", async (req, res) => {
   try {
-    const { rows } = await pool.query(
-      "SELECT * FROM public.postulaciones ORDER BY id DESC LIMIT 100",
-    );
+    const { perfil_id } = req.query;
+    let rows;
+    if (perfil_id) {
+      const result = await pool.query(
+        "SELECT * FROM public.postulaciones WHERE perfil_id = $1 ORDER BY id DESC LIMIT 100",
+        [perfil_id],
+      );
+      rows = result.rows;
+    }
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
