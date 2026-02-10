@@ -624,15 +624,20 @@ app.patch("/api/perfiles/:id", async (req, res) => {
 app.get("/api/postulaciones", async (req, res) => {
   try {
     const { perfil_id } = req.query;
-    let rows;
+    let query, values;
     if (perfil_id) {
-      const result = await pool.query(
-        "SELECT * FROM public.postulaciones WHERE perfil_id = $1 ORDER BY id DESC LIMIT 100",
-        [perfil_id],
-      );
-      rows = result.rows;
+      query = `
+        SELECT p.*, c.nombre_comercial, pr.titulo
+        FROM public.postulaciones p
+        JOIN public.companies c ON p.empresa_id = c.id
+        JOIN public.projects pr ON p.oferta_id = pr.id
+        WHERE p.perfil_id = $1
+        ORDER BY p.id DESC LIMIT 100
+      `;
+      values = [perfil_id];
     }
-    res.json(rows);
+    const result = await pool.query(query, values);
+    res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
