@@ -170,6 +170,7 @@ app.patch("/api/me/candidate", authenticateToken, async (req, res) => {
       "birth_date",
       "location",
       "major_id",
+      "carrera",
       "start_year",
       "end_year",
       "bio",
@@ -187,7 +188,19 @@ app.patch("/api/me/candidate", authenticateToken, async (req, res) => {
     for (const key of Object.keys(fields)) {
       if (allowedFields.includes(key)) {
         updates.push(`${key} = $${valueIndex}`);
-        values.push(fields[key]);
+        // Convertir strings vacíos a null para fechas y números; mantener '' para texto si aplica
+        let val = fields[key];
+        if (val === "" || val === undefined) {
+          val = null;
+        }
+        if (key === "birth_date" && val && typeof val === "string") {
+          val = val.trim() || null;
+        }
+        if ((key === "end_year" || key === "start_year" || key === "major_id") && val !== null) {
+          val = parseInt(val, 10);
+          if (isNaN(val)) val = null;
+        }
+        values.push(val);
         valueIndex++;
       }
     }
