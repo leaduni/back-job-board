@@ -313,6 +313,105 @@ app.post("/api/auth/register", async (req, res) => {
   }
 });
 
+// Register empresa: crea usuario en backend y empresa en CMS
+app.post("/api/auth/register-empresa", async (req, res) => {
+  const {
+    email,
+    password,
+    nombre_empresa,
+    razon_social,
+    ruc,
+    nombres_contacto,
+    apellidos_contacto,
+    sector,
+    telefono_contacto,
+    sitio_web,
+    direccion,
+    tiene_convenio,
+  } = req.body;
+
+  if (!email || !password || !nombre_empresa || !sector) {
+    return res.status(400).json({
+      error: "Email, password, nombre_empresa y sector son obligatorios",
+    });
+  }
+
+  const CMS_API_URL = process.env.CMS_API_URL || "http://localhost:3000";
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const checkUser = await client.query(
+      "SELECT id FROM public.users WHERE email = $1",
+      [email]
+    );
+    if (checkUser.rows.length > 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "El correo ya está registrado" });
+    }
+
+    const { salt, hash } = hashPassword(password);
+
+    const userQuery = `
+      INSERT INTO public.users (email, salt, hash, role)
+      VALUES ($1, $2, $3, 'company')
+      RETURNING id, email, role, created_at
+    `;
+    const userRes = await client.query(userQuery, [email, salt, hash]);
+    const newUser = userRes.rows[0];
+
+    await client.query("COMMIT");
+
+    const persona_contacto = [nombres_contacto, apellidos_contacto]
+      .filter(Boolean)
+      .join(" ");
+
+    const cmsRes = await fetch(`${CMS_API_URL}/api/companies`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nombre_comercial: nombre_empresa,
+        razon_social: razon_social || null,
+        ruc: ruc || null,
+        sector,
+        email_contacto: email,
+        persona_contacto: persona_contacto || null,
+        telefono_contacto: telefono_contacto || null,
+        sitio_web: sitio_web || null,
+        direccion: direccion || null,
+        tiene_convenio: !!tiene_convenio,
+      }),
+    });
+
+    if (!cmsRes.ok) {
+      const errData = await cmsRes.json().catch(() => ({}));
+      console.error("CMS companies create error:", errData);
+    }
+
+    const token = jwt.sign(
+      { id: newUser.id, email: newUser.email, role: newUser.role },
+      JWT_SECRET,
+      { expiresIn: "24h" }
+    );
+
+    res.status(201).json({
+      message: "Empresa registrada correctamente",
+      user: newUser,
+      token,
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("Register empresa error:", err);
+    res
+      .status(500)
+      .json({ error: "Error al registrar empresa", detail: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 // Login
 app.post("/api/auth/login", async (req, res) => {
   const { email, password } = req.body;
