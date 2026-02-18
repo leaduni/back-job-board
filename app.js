@@ -8,10 +8,26 @@ const { listTables, ping } = require("./db");
 const { pool } = require("./db");
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
+const { Resend } = require("resend");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || "secret_key_change_this";
+
+// OTP in-memory store (no DB persistence)
+const OTP_TTL_MS = 10 * 60 * 1000; // 10 min
+const OTP_COOLDOWN_MS = 60 * 1000; // 60 sec
+const OTP_MAX_ATTEMPTS = 5;
+const otpStore = new Map(); // key=email, value={ code, expiresAt, attempts, lastSentAt }
+
+function normalizeEmail(email) {
+  return String(email || "")
+    .trim()
+    .toLowerCase();
+}
+function generate4DigitCode() {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
 
 // Middleware
 app.use(cors());
@@ -240,14 +256,108 @@ app.patch("/api/me/candidate", authenticateToken, async (req, res) => {
   }
 });
 
-// Register
-app.post("/api/auth/register", async (req, res) => {
-  const { email, password, role, first_name, last_name } = req.body;
+// Send verification code (OTP)
+app.post("/api/auth/send-code", async (req, res) => {
+  const email = normalizeEmail(req.body?.email);
 
-  if (!email || !password || !first_name || !last_name) {
-    return res.status(400).json({
-      error: "Email, password, first_name, and last_name are required",
+  if (!email) {
+    return res.status(400).json({ error: "Email is required" });
+  }
+
+  if (!process.env.RESEND_API_KEY) {
+    return res
+      .status(500)
+      .json({ error: "RESEND_API_KEY is not configured on server" });
+  }
+
+  try {
+    // Check if user already exists
+    const checkUser = await pool.query(
+      "SELECT id FROM public.users WHERE email = $1",
+      [email],
+    );
+    if (checkUser.rows.length > 0) {
+      return res.status(409).json({ error: "User already exists" });
+    }
+
+    const now = Date.now();
+    const cached = otpStore.get(email);
+
+    // Anti-spam cooldown
+    if (cached && now - cached.lastSentAt < OTP_COOLDOWN_MS) {
+      return res
+        .status(429)
+        .json({ error: "Wait 60 seconds before requesting another code" });
+    }
+
+    const code = generate4DigitCode();
+
+    otpStore.set(email, {
+      code,
+      expiresAt: now + OTP_TTL_MS,
+      attempts: 0,
+      lastSentAt: now,
     });
+
+    const resend = new Resend(process.env.RESEND_API_KEY);
+    await resend.emails.send({
+      from: process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev",
+      to: [email],
+      subject: "Código de verificación - Bolsa Laboral LEAD UNI",
+      html: `
+        <div style="font-family: Arial, sans-serif; color: #111; line-height: 1.5;">
+          <h2>Verifica tu correo</h2>
+          <p>Tu código de verificación es:</p>
+          <p style="font-size: 32px; font-weight: 700; letter-spacing: 4px; margin: 16px 0;">${code}</p>
+          <p>Este código vence en 10 minutos.</p>
+        </div>
+      `,
+    });
+
+    return res.json({ ok: true, message: "Code sent successfully" });
+  } catch (err) {
+    console.error("Send code error:", err);
+    return res
+      .status(500)
+      .json({ error: "Failed to send verification code", detail: err.message });
+  }
+});
+
+// Register (requires OTP code)
+app.post("/api/auth/register", async (req, res) => {
+  const { email, password, role, first_name, last_name, code } = req.body;
+
+  if (!email || !password || !first_name || !last_name || !code) {
+    return res.status(400).json({
+      error: "Email, password, first_name, last_name, and code are required",
+    });
+  }
+
+  const normalizedEmail = normalizeEmail(email);
+  const pending = otpStore.get(normalizedEmail);
+
+  if (!pending) {
+    return res
+      .status(404)
+      .json({ error: "No verification code found for this email" });
+  }
+
+  if (Date.now() > pending.expiresAt) {
+    otpStore.delete(normalizedEmail);
+    return res.status(410).json({ error: "Code expired. Request a new one" });
+  }
+
+  if (pending.attempts >= OTP_MAX_ATTEMPTS) {
+    otpStore.delete(normalizedEmail);
+    return res
+      .status(429)
+      .json({ error: "Too many attempts. Request a new code" });
+  }
+
+  if (pending.code !== String(code).trim()) {
+    pending.attempts += 1;
+    otpStore.set(normalizedEmail, pending);
+    return res.status(400).json({ error: "Invalid verification code" });
   }
 
   const client = await pool.connect();
@@ -258,10 +368,11 @@ app.post("/api/auth/register", async (req, res) => {
     // Check if user exists
     const checkUser = await client.query(
       "SELECT id FROM public.users WHERE email = $1",
-      [email],
+      [normalizedEmail],
     );
     if (checkUser.rows.length > 0) {
       await client.query("ROLLBACK");
+      otpStore.delete(normalizedEmail);
       return res.status(409).json({ error: "User already exists" });
     }
 
@@ -275,7 +386,7 @@ app.post("/api/auth/register", async (req, res) => {
       VALUES ($1, $2, $3, $4)
       RETURNING id, email, role, created_at
     `;
-    const userValues = [email, salt, hash, role || "user"];
+    const userValues = [normalizedEmail, salt, hash, role || "user"];
     const userRes = await client.query(userQuery, userValues);
     const newUser = userRes.rows[0];
 
@@ -290,6 +401,9 @@ app.post("/api/auth/register", async (req, res) => {
     const newCandidate = candidateRes.rows[0];
 
     await client.query("COMMIT");
+
+    // OTP no longer needed
+    otpStore.delete(normalizedEmail);
 
     // Create JWT
     const token = jwt.sign(
@@ -415,15 +529,16 @@ app.post("/api/auth/register-empresa", async (req, res) => {
 // Login
 app.post("/api/auth/login", async (req, res) => {
   const { email, password } = req.body;
+  const normalizedEmail = normalizeEmail(email);
 
-  if (!email || !password) {
+  if (!normalizedEmail || !password) {
     return res.status(400).json({ error: "Email and password are required" });
   }
 
   try {
     // Find user
     const query = "SELECT * FROM public.users WHERE email = $1";
-    const { rows } = await pool.query(query, [email]);
+    const { rows } = await pool.query(query, [normalizedEmail]);
 
     if (rows.length === 0) {
       return res.status(401).json({ error: "Invalid credentials" });
@@ -433,7 +548,6 @@ app.post("/api/auth/login", async (req, res) => {
 
     // Verify password
     if (!verifyPassword(password, user.salt, user.hash)) {
-      // Update login attempts if needed (optional based on schema)
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
@@ -747,8 +861,12 @@ app.get("/api/postulaciones", async (req, res) => {
         ORDER BY p.id DESC LIMIT 100
       `;
       values = [perfil_id];
+      const result = await pool.query(query, values);
+      return res.json(result.rows);
     }
-    const result = await pool.query(query, values);
+    const result = await pool.query(
+      `SELECT * FROM public.postulaciones ORDER BY id DESC LIMIT 100`,
+    );
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
