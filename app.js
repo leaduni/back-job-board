@@ -29,6 +29,32 @@ function generate4DigitCode() {
   return String(Math.floor(1000 + Math.random() * 9000));
 }
 
+function extractErrorDetail(err) {
+  if (!err) return "Unknown error";
+  if (typeof err === "string") return err;
+  if (typeof err.message === "string" && err.message.trim()) return err.message;
+  if (
+    err.error &&
+    typeof err.error.message === "string" &&
+    err.error.message.trim()
+  ) {
+    return err.error.message;
+  }
+  if (Array.isArray(err.errors) && err.errors.length > 0) {
+    const first = err.errors[0];
+    if (typeof first === "string") return first;
+    if (first && typeof first.message === "string" && first.message.trim()) {
+      return first.message;
+    }
+  }
+
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return "Unknown error";
+  }
+}
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -212,7 +238,10 @@ app.patch("/api/me/candidate", authenticateToken, async (req, res) => {
         if (key === "birth_date" && val && typeof val === "string") {
           val = val.trim() || null;
         }
-        if ((key === "end_year" || key === "start_year" || key === "major_id") && val !== null) {
+        if (
+          (key === "end_year" || key === "start_year" || key === "major_id") &&
+          val !== null
+        ) {
           val = parseInt(val, 10);
           if (isNaN(val)) val = null;
         }
@@ -300,7 +329,7 @@ app.post("/api/auth/send-code", async (req, res) => {
     });
 
     const resend = new Resend(process.env.RESEND_API_KEY);
-    await resend.emails.send({
+    const { error } = await resend.emails.send({
       from: process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev",
       to: [email],
       subject: "Código de verificación - Bolsa Laboral LEAD UNI",
@@ -314,12 +343,17 @@ app.post("/api/auth/send-code", async (req, res) => {
       `,
     });
 
+    if (error) {
+      throw new Error(extractErrorDetail(error));
+    }
+
     return res.json({ ok: true, message: "Code sent successfully" });
   } catch (err) {
-    console.error("Send code error:", err);
+    const detail = extractErrorDetail(err);
+    console.error("Send code error:", detail, err);
     return res
       .status(500)
-      .json({ error: "Failed to send verification code", detail: err.message });
+      .json({ error: "Failed to send verification code", detail });
   }
 });
 
@@ -459,7 +493,7 @@ app.post("/api/auth/register-empresa", async (req, res) => {
 
     const checkUser = await client.query(
       "SELECT id FROM public.users WHERE email = $1",
-      [email]
+      [email],
     );
     if (checkUser.rows.length > 0) {
       await client.query("ROLLBACK");
@@ -507,7 +541,7 @@ app.post("/api/auth/register-empresa", async (req, res) => {
     const token = jwt.sign(
       { id: newUser.id, email: newUser.email, role: newUser.role },
       JWT_SECRET,
-      { expiresIn: "24h" }
+      { expiresIn: "24h" },
     );
 
     res.status(201).json({
