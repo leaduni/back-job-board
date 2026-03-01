@@ -300,15 +300,6 @@ app.post("/api/auth/send-code", async (req, res) => {
   }
 
   try {
-    // Check if user already exists
-    const checkUser = await pool.query(
-      "SELECT id FROM public.users WHERE email = $1",
-      [email],
-    );
-    if (checkUser.rows.length > 0) {
-      return res.status(409).json({ error: "User already exists" });
-    }
-
     const now = Date.now();
     const cached = otpStore.get(email);
 
