@@ -357,6 +357,81 @@ app.post("/api/auth/send-code", async (req, res) => {
   }
 });
 
+// Reset password (requires OTP code)
+app.post("/api/auth/reset-password", async (req, res) => {
+  const normalizedEmail = normalizeEmail(req.body?.email);
+  const code = String(
+    req.body?.code ?? req.body?.verificationCode ?? "",
+  ).trim();
+  const newPassword = String(
+    req.body?.new_password ?? req.body?.newPassword ?? req.body?.password ?? "",
+  );
+
+  if (!normalizedEmail || !code || !newPassword) {
+    return res.status(400).json({
+      error: "Email, code, and new password are required",
+    });
+  }
+
+  if (newPassword.length < 6) {
+    return res
+      .status(400)
+      .json({ error: "New password must be at least 6 characters" });
+  }
+
+  const pending = otpStore.get(normalizedEmail);
+
+  if (!pending) {
+    return res
+      .status(404)
+      .json({ error: "No verification code found for this email" });
+  }
+
+  if (Date.now() > pending.expiresAt) {
+    otpStore.delete(normalizedEmail);
+    return res.status(410).json({ error: "Code expired. Request a new one" });
+  }
+
+  if (pending.attempts >= OTP_MAX_ATTEMPTS) {
+    otpStore.delete(normalizedEmail);
+    return res
+      .status(429)
+      .json({ error: "Too many attempts. Request a new code" });
+  }
+
+  if (pending.code !== code) {
+    pending.attempts += 1;
+    otpStore.set(normalizedEmail, pending);
+    return res.status(400).json({ error: "Invalid verification code" });
+  }
+
+  try {
+    const checkUser = await pool.query(
+      "SELECT id FROM public.users WHERE email = $1",
+      [normalizedEmail],
+    );
+
+    if (checkUser.rows.length === 0) {
+      otpStore.delete(normalizedEmail);
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const { salt, hash } = hashPassword(newPassword);
+    await pool.query(
+      "UPDATE public.users SET salt = $1, hash = $2 WHERE email = $3",
+      [salt, hash, normalizedEmail],
+    );
+
+    otpStore.delete(normalizedEmail);
+
+    return res.json({ ok: true, message: "Password reset successful" });
+  } catch (err) {
+    const detail = extractErrorDetail(err);
+    console.error("Reset password error:", detail, err);
+    return res.status(500).json({ error: "Password reset failed", detail });
+  }
+});
+
 // Register (requires OTP code)
 app.post("/api/auth/register", async (req, res) => {
   const { email, password, role, first_name, last_name, code } = req.body;
