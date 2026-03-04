@@ -164,6 +164,14 @@ function authenticateToken(req, res, next) {
   });
 }
 
+async function getCandidateIdByUserId(userId) {
+  const { rows } = await pool.query(
+    "SELECT id FROM public.candidates WHERE user_id = $1 LIMIT 1",
+    [userId],
+  );
+  return rows[0]?.id || null;
+}
+
 // --- AUTHENTICATION ROUTES ---
 
 // Get current user profile (User + Candidate data)
@@ -197,6 +205,317 @@ app.get("/api/me", authenticateToken, async (req, res) => {
       .json({ error: "Failed to fetch profile", detail: err.message });
   }
 });
+
+// Search skills by name (typeahead)
+// Usage: GET /api/skills/search?q=python&limit=10
+app.get("/api/skills/search", async (req, res) => {
+  const queryText = String(req.query.q || "").trim();
+  const limitRaw = Number.parseInt(String(req.query.limit || "10"), 10);
+  const limit = Number.isNaN(limitRaw)
+    ? 10
+    : Math.min(Math.max(limitRaw, 1), 50);
+
+  if (!queryText) {
+    return res.status(400).json({ error: "Query param q is required" });
+  }
+
+  try {
+    const sql = `
+      SELECT id, name
+      FROM public.skills
+      WHERE name ILIKE $1
+      ORDER BY
+        CASE WHEN LOWER(name) = LOWER($2) THEN 0 ELSE 1 END,
+        name ASC
+      LIMIT $3
+    `;
+    const { rows } = await pool.query(sql, [
+      `%${queryText}%`,
+      queryText,
+      limit,
+    ]);
+    return res.json({ items: rows });
+  } catch (err) {
+    console.error("Search skills error:", err);
+    return res
+      .status(500)
+      .json({ error: "Failed to search skills", detail: err.message });
+  }
+});
+
+// Create a custom skill
+app.post("/api/skills", authenticateToken, async (req, res) => {
+  const name = String(req.body?.name || "").trim();
+
+  if (!name) {
+    return res.status(400).json({ error: "Skill name is required" });
+  }
+
+  try {
+    const existing = await pool.query(
+      "SELECT id, name FROM public.skills WHERE LOWER(name) = LOWER($1) LIMIT 1",
+      [name],
+    );
+
+    if (existing.rows.length > 0) {
+      return res.json({ ok: true, created: false, skill: existing.rows[0] });
+    }
+
+    const { rows } = await pool.query(
+      "INSERT INTO public.skills (name) VALUES ($1) RETURNING id, name",
+      [name],
+    );
+
+    return res.status(201).json({ ok: true, created: true, skill: rows[0] });
+  } catch (err) {
+    console.error("Create skill error:", err);
+    return res
+      .status(500)
+      .json({ error: "Failed to create skill", detail: err.message });
+  }
+});
+
+// Get authenticated candidate skills
+app.get("/api/me/candidate/skills", authenticateToken, async (req, res) => {
+  try {
+    const candidateId = await getCandidateIdByUserId(req.user.id);
+
+    if (!candidateId) {
+      return res.status(404).json({ error: "Candidate profile not found" });
+    }
+
+    const { rows } = await pool.query(
+      `
+      SELECT s.id, s.name
+      FROM public.candidates_skills cs
+      JOIN public.skills s ON s.id = cs.skill_id
+      WHERE cs.candidate_id = $1
+      ORDER BY s.name ASC
+      `,
+      [candidateId],
+    );
+
+    return res.json({ items: rows });
+  } catch (err) {
+    console.error("Get candidate skills error:", err);
+    return res
+      .status(500)
+      .json({ error: "Failed to fetch candidate skills", detail: err.message });
+  }
+});
+
+// Get skills by candidate id
+app.get("/api/candidates/:candidateId/skills", async (req, res) => {
+  const candidateId = Number.parseInt(String(req.params.candidateId), 10);
+
+  if (!Number.isInteger(candidateId) || candidateId <= 0) {
+    return res.status(400).json({ error: "Invalid candidateId" });
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT s.id, s.name
+      FROM public.candidates_skills cs
+      JOIN public.skills s ON s.id = cs.skill_id
+      WHERE cs.candidate_id = $1
+      ORDER BY s.name ASC
+      `,
+      [candidateId],
+    );
+
+    return res.json({ items: rows });
+  } catch (err) {
+    console.error("Get skills by candidate id error:", err);
+    return res
+      .status(500)
+      .json({ error: "Failed to fetch candidate skills", detail: err.message });
+  }
+});
+
+// Attach skills to authenticated candidate profile
+// Body: { skillIds?: number[], skillNames?: string[] }
+app.post("/api/me/candidate/skills", authenticateToken, async (req, res) => {
+  const skillIdsInput = Array.isArray(req.body?.skillIds)
+    ? req.body.skillIds
+    : [];
+  const skillNamesInput = Array.isArray(req.body?.skillNames)
+    ? req.body.skillNames
+    : [];
+
+  const normalizedSkillIds = [
+    ...new Set(
+      skillIdsInput
+        .map((value) => Number.parseInt(String(value), 10))
+        .filter((value) => Number.isInteger(value) && value > 0),
+    ),
+  ];
+
+  const normalizedSkillNames = [
+    ...new Set(
+      skillNamesInput
+        .map((value) => String(value || "").trim())
+        .filter((value) => value.length > 0),
+    ),
+  ];
+
+  if (normalizedSkillIds.length === 0 && normalizedSkillNames.length === 0) {
+    return res.status(400).json({
+      error: "Provide at least one skill in skillIds or skillNames",
+    });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const candidateId = await getCandidateIdByUserId(req.user.id);
+    if (!candidateId) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Candidate profile not found" });
+    }
+
+    let allSkillIds = [...normalizedSkillIds];
+
+    if (normalizedSkillIds.length > 0) {
+      const existingById = await client.query(
+        "SELECT id FROM public.skills WHERE id = ANY($1::int[])",
+        [normalizedSkillIds],
+      );
+      const existingSet = new Set(existingById.rows.map((row) => row.id));
+      const missingSkillIds = normalizedSkillIds.filter(
+        (id) => !existingSet.has(id),
+      );
+
+      if (missingSkillIds.length > 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "Some skillIds do not exist",
+          missingSkillIds,
+        });
+      }
+    }
+
+    for (const skillName of normalizedSkillNames) {
+      const found = await client.query(
+        "SELECT id FROM public.skills WHERE LOWER(name) = LOWER($1) LIMIT 1",
+        [skillName],
+      );
+
+      if (found.rows.length > 0) {
+        allSkillIds.push(found.rows[0].id);
+        continue;
+      }
+
+      const created = await client.query(
+        "INSERT INTO public.skills (name) VALUES ($1) RETURNING id",
+        [skillName],
+      );
+      allSkillIds.push(created.rows[0].id);
+    }
+
+    allSkillIds = [...new Set(allSkillIds)];
+
+    if (allSkillIds.length > 0) {
+      const existingLinks = await client.query(
+        "SELECT skill_id FROM public.candidates_skills WHERE candidate_id = $1 AND skill_id = ANY($2::int[])",
+        [candidateId, allSkillIds],
+      );
+      const linkedSet = new Set(existingLinks.rows.map((row) => row.skill_id));
+      const toInsert = allSkillIds.filter((skillId) => !linkedSet.has(skillId));
+
+      if (toInsert.length > 0) {
+        await client.query(
+          `
+          INSERT INTO public.candidates_skills (candidate_id, skill_id)
+          SELECT $1, UNNEST($2::int[])
+          `,
+          [candidateId, toInsert],
+        );
+      }
+    }
+
+    const result = await client.query(
+      `
+      SELECT s.id, s.name
+      FROM public.candidates_skills cs
+      JOIN public.skills s ON s.id = cs.skill_id
+      WHERE cs.candidate_id = $1
+      ORDER BY s.name ASC
+      `,
+      [candidateId],
+    );
+
+    await client.query("COMMIT");
+    return res.status(201).json({
+      ok: true,
+      message: "Skills attached successfully",
+      items: result.rows,
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("Attach candidate skills error:", err);
+    return res
+      .status(500)
+      .json({ error: "Failed to attach skills", detail: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Remove one skill from authenticated candidate profile
+app.delete(
+  "/api/me/candidate/skills/:skillId",
+  authenticateToken,
+  async (req, res) => {
+    const skillId = Number.parseInt(String(req.params.skillId), 10);
+
+    if (!Number.isInteger(skillId) || skillId <= 0) {
+      return res.status(400).json({ error: "Invalid skillId" });
+    }
+
+    try {
+      const candidateId = await getCandidateIdByUserId(req.user.id);
+
+      if (!candidateId) {
+        return res.status(404).json({ error: "Candidate profile not found" });
+      }
+
+      const deleted = await pool.query(
+        "DELETE FROM public.candidates_skills WHERE candidate_id = $1 AND skill_id = $2 RETURNING candidate_id, skill_id",
+        [candidateId, skillId],
+      );
+
+      if (deleted.rows.length === 0) {
+        return res
+          .status(404)
+          .json({ error: "Skill not attached to candidate" });
+      }
+
+      const { rows } = await pool.query(
+        `
+        SELECT s.id, s.name
+        FROM public.candidates_skills cs
+        JOIN public.skills s ON s.id = cs.skill_id
+        WHERE cs.candidate_id = $1
+        ORDER BY s.name ASC
+        `,
+        [candidateId],
+      );
+
+      return res.json({
+        ok: true,
+        message: "Skill removed successfully",
+        items: rows,
+      });
+    } catch (err) {
+      console.error("Remove candidate skill error:", err);
+      return res
+        .status(500)
+        .json({ error: "Failed to remove skill", detail: err.message });
+    }
+  },
+);
 
 // Update current user's candidate profile
 app.patch("/api/me/candidate", authenticateToken, async (req, res) => {
