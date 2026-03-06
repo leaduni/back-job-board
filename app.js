@@ -186,7 +186,42 @@ async function syncSkillsIdSequence(queryable = pool) {
   `);
 }
 
-async function findOrCreateSkillByName(queryable, skillName) {
+function buildSavepointName(prefix = "sp_skill") {
+  const random = Math.floor(Math.random() * 1000000);
+  return `${prefix}_${Date.now()}_${random}`;
+}
+
+async function insertSkillWithOptionalSavepoint(
+  queryable,
+  skillName,
+  useSavepoint,
+) {
+  if (!useSavepoint) {
+    return queryable.query(
+      "INSERT INTO public.skills (name) VALUES ($1) RETURNING id, name",
+      [skillName],
+    );
+  }
+
+  const savepointName = buildSavepointName();
+  await queryable.query(`SAVEPOINT ${savepointName}`);
+  try {
+    const result = await queryable.query(
+      "INSERT INTO public.skills (name) VALUES ($1) RETURNING id, name",
+      [skillName],
+    );
+    await queryable.query(`RELEASE SAVEPOINT ${savepointName}`);
+    return result;
+  } catch (err) {
+    await queryable.query(`ROLLBACK TO SAVEPOINT ${savepointName}`);
+    await queryable.query(`RELEASE SAVEPOINT ${savepointName}`);
+    throw err;
+  }
+}
+
+async function findOrCreateSkillByName(queryable, skillName, options = {}) {
+  const useSavepoint = Boolean(options.useSavepoint);
+
   const existing = await queryable.query(
     "SELECT id, name FROM public.skills WHERE LOWER(name) = LOWER($1) LIMIT 1",
     [skillName],
@@ -197,9 +232,10 @@ async function findOrCreateSkillByName(queryable, skillName) {
   }
 
   try {
-    const created = await queryable.query(
-      "INSERT INTO public.skills (name) VALUES ($1) RETURNING id, name",
-      [skillName],
+    const created = await insertSkillWithOptionalSavepoint(
+      queryable,
+      skillName,
+      useSavepoint,
     );
     return { skill: created.rows[0], created: true };
   } catch (err) {
@@ -218,9 +254,10 @@ async function findOrCreateSkillByName(queryable, skillName) {
       return { skill: existingAfterSync.rows[0], created: false };
     }
 
-    const retried = await queryable.query(
-      "INSERT INTO public.skills (name) VALUES ($1) RETURNING id, name",
-      [skillName],
+    const retried = await insertSkillWithOptionalSavepoint(
+      queryable,
+      skillName,
+      useSavepoint,
     );
     return { skill: retried.rows[0], created: true };
   }
@@ -306,7 +343,9 @@ app.post("/api/skills", authenticateToken, async (req, res) => {
   }
 
   try {
-    const { skill, created } = await findOrCreateSkillByName(pool, name);
+    const { skill, created } = await findOrCreateSkillByName(pool, name, {
+      useSavepoint: false,
+    });
     return res.status(created ? 201 : 200).json({ ok: true, created, skill });
   } catch (err) {
     console.error("Create skill error:", err);
@@ -438,7 +477,9 @@ app.post("/api/me/candidate/skills", authenticateToken, async (req, res) => {
     }
 
     for (const skillName of normalizedSkillNames) {
-      const { skill } = await findOrCreateSkillByName(client, skillName);
+      const { skill } = await findOrCreateSkillByName(client, skillName, {
+        useSavepoint: true,
+      });
       allSkillIds.push(skill.id);
     }
 
