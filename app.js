@@ -172,6 +172,60 @@ async function getCandidateIdByUserId(userId) {
   return rows[0]?.id || null;
 }
 
+function isSkillsPrimaryKeyConflict(err) {
+  return err?.code === "23505" && err?.constraint === "skills_pkey";
+}
+
+async function syncSkillsIdSequence(queryable = pool) {
+  await queryable.query(`
+    SELECT setval(
+      pg_get_serial_sequence('public.skills', 'id'),
+      COALESCE((SELECT MAX(id) FROM public.skills), 0) + 1,
+      false
+    )
+  `);
+}
+
+async function findOrCreateSkillByName(queryable, skillName) {
+  const existing = await queryable.query(
+    "SELECT id, name FROM public.skills WHERE LOWER(name) = LOWER($1) LIMIT 1",
+    [skillName],
+  );
+
+  if (existing.rows.length > 0) {
+    return { skill: existing.rows[0], created: false };
+  }
+
+  try {
+    const created = await queryable.query(
+      "INSERT INTO public.skills (name) VALUES ($1) RETURNING id, name",
+      [skillName],
+    );
+    return { skill: created.rows[0], created: true };
+  } catch (err) {
+    if (!isSkillsPrimaryKeyConflict(err)) {
+      throw err;
+    }
+
+    // Sequence can be out of sync after manual inserts. Fix and retry once.
+    await syncSkillsIdSequence(queryable);
+
+    const existingAfterSync = await queryable.query(
+      "SELECT id, name FROM public.skills WHERE LOWER(name) = LOWER($1) LIMIT 1",
+      [skillName],
+    );
+    if (existingAfterSync.rows.length > 0) {
+      return { skill: existingAfterSync.rows[0], created: false };
+    }
+
+    const retried = await queryable.query(
+      "INSERT INTO public.skills (name) VALUES ($1) RETURNING id, name",
+      [skillName],
+    );
+    return { skill: retried.rows[0], created: true };
+  }
+}
+
 // --- AUTHENTICATION ROUTES ---
 
 // Get current user profile (User + Candidate data)
@@ -252,21 +306,8 @@ app.post("/api/skills", authenticateToken, async (req, res) => {
   }
 
   try {
-    const existing = await pool.query(
-      "SELECT id, name FROM public.skills WHERE LOWER(name) = LOWER($1) LIMIT 1",
-      [name],
-    );
-
-    if (existing.rows.length > 0) {
-      return res.json({ ok: true, created: false, skill: existing.rows[0] });
-    }
-
-    const { rows } = await pool.query(
-      "INSERT INTO public.skills (name) VALUES ($1) RETURNING id, name",
-      [name],
-    );
-
-    return res.status(201).json({ ok: true, created: true, skill: rows[0] });
+    const { skill, created } = await findOrCreateSkillByName(pool, name);
+    return res.status(created ? 201 : 200).json({ ok: true, created, skill });
   } catch (err) {
     console.error("Create skill error:", err);
     return res
@@ -397,21 +438,8 @@ app.post("/api/me/candidate/skills", authenticateToken, async (req, res) => {
     }
 
     for (const skillName of normalizedSkillNames) {
-      const found = await client.query(
-        "SELECT id FROM public.skills WHERE LOWER(name) = LOWER($1) LIMIT 1",
-        [skillName],
-      );
-
-      if (found.rows.length > 0) {
-        allSkillIds.push(found.rows[0].id);
-        continue;
-      }
-
-      const created = await client.query(
-        "INSERT INTO public.skills (name) VALUES ($1) RETURNING id",
-        [skillName],
-      );
-      allSkillIds.push(created.rows[0].id);
+      const { skill } = await findOrCreateSkillByName(client, skillName);
+      allSkillIds.push(skill.id);
     }
 
     allSkillIds = [...new Set(allSkillIds)];
